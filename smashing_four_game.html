@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smashing Four - HTML5 Game</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/phaser/3.70.0/phaser.min.js"></script>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            background: #1a1a1a;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+        }
+        #game-container {
+            text-align: center;
+        }
+        #ui {
+            margin-top: 10px;
+            color: white;
+        }
+        .player-info {
+            display: inline-block;
+            margin: 0 20px;
+            padding: 10px;
+            background: #333;
+            border-radius: 5px;
+        }
+        .current-player {
+            background: #555;
+        }
+    </style>
+</head>
+<body>
+    <div id="game-container">
+        <div id="game"></div>
+        <div id="ui">
+            <div class="player-info" id="player1-info">
+                <h3>Player 1 (Blue)</h3>
+                <div>Heroes Alive: <span id="p1-heroes">4</span></div>
+            </div>
+            <div class="player-info" id="player2-info">
+                <h3>Player 2 (Red)</h3>
+                <div>Heroes Alive: <span id="p2-heroes">4</span></div>
+            </div>
+        </div>
+        <div id="instructions" style="color: white; margin-top: 10px;">
+            Click and drag to aim, release to shoot your hero!
+        </div>
+    </div>
+
+    <script>
+        class SmashingFourGame extends Phaser.Scene {
+            constructor() {
+                super({ key: 'SmashingFourGame' });
+                this.currentPlayer = 1;
+                this.selectedHero = null;
+                this.isAiming = false;
+                this.aimLine = null;
+                this.heroes = [];
+                this.gameOver = false;
+            }
+
+            preload() {
+                // Create colored rectangles for heroes instead of loading images
+                this.load.image('arena', 'data:image/svg+xml;base64,' + btoa(`
+                    <svg width="800" height="600" xmlns="http://www.w3.org/2000/svg">
+                        <defs>
+                            <pattern id="grid" width="50" height="50" patternUnits="userSpaceOnUse">
+                                <path d="M 50 0 L 0 0 0 50" fill="none" stroke="#444" stroke-width="1"/>
+                            </pattern>
+                        </defs>
+                        <rect width="800" height="600" fill="#2a2a2a"/>
+                        <rect width="800" height="600" fill="url(#grid)"/>
+                        <circle cx="400" cy="300" r="250" fill="none" stroke="#666" stroke-width="3"/>
+                    </svg>
+                `));
+            }
+
+            create() {
+                // Add arena background
+                this.add.image(400, 300, 'arena');
+
+                // Create arena boundaries (invisible physics bodies)
+                this.physics.world.setBounds(50, 50, 700, 500);
+
+                // Create heroes
+                this.createHeroes();
+
+                // Setup input
+                this.input.on('pointerdown', this.startAim, this);
+                this.input.on('pointermove', this.updateAim, this);
+                this.input.on('pointerup', this.shoot, this);
+
+                // Create aim line graphics
+                this.aimLine = this.add.graphics();
+
+                // Update UI
+                this.updateUI();
+            }
+
+            createHeroes() {
+                // Player 1 heroes (blue) - left side
+                const p1Positions = [
+                    { x: 150, y: 200 },
+                    { x: 120, y: 300 },
+                    { x: 150, y: 400 },
+                    { x: 200, y: 350 }
+                ];
+
+                // Player 2 heroes (red) - right side
+                const p2Positions = [
+                    { x: 650, y: 200 },
+                    { x: 680, y: 300 },
+                    { x: 650, y: 400 },
+                    { x: 600, y: 350 }
+                ];
+
+                // Create Player 1 heroes
+                p1Positions.forEach((pos, index) => {
+                    const hero = this.createHero(pos.x, pos.y, 1, index);
+                    this.heroes.push(hero);
+                });
+
+                // Create Player 2 heroes
+                p2Positions.forEach((pos, index) => {
+                    const hero = this.createHero(pos.x, pos.y, 2, index);
+                    this.heroes.push(hero);
+                });
+            }
+
+            createHero(x, y, player, index) {
+                // Create hero graphics
+                const graphics = this.add.graphics();
+                const color = player === 1 ? 0x4444ff : 0xff4444;
+                graphics.fillStyle(color);
+                graphics.fillCircle(0, 0, 25);
+                graphics.lineStyle(3, 0xffffff);
+                graphics.strokeCircle(0, 0, 25);
+                
+                // Add number
+                const text = this.add.text(0, 0, (index + 1).toString(), {
+                    fontSize: '16px',
+                    fill: '#ffffff',
+                    fontStyle: 'bold'
+                }).setOrigin(0.5);
+
+                // Create container
+                const container = this.add.container(x, y, [graphics, text]);
+                
+                // Add physics
+                this.physics.add.existing(container);
+                container.body.setCircle(25);
+                container.body.setBounce(0.8);
+                container.body.setCollideWorldBounds(true);
+                container.body.setFriction(0.1);
+
+                // Add properties
+                container.player = player;
+                container.heroIndex = index;
+                container.health = 100;
+                container.isAlive = true;
+
+                // Make interactive for current player's heroes
+                if (player === this.currentPlayer) {
+                    container.setInteractive(new Phaser.Geom.Circle(0, 0, 25), Phaser.Geom.Circle.Contains);
+                }
+
+                return container;
+            }
+
+            startAim(pointer) {
+                if (this.gameOver) return;
+
+                // Find hero under pointer
+                const hero = this.getHeroAtPosition(pointer.x, pointer.y);
+                
+                if (hero && hero.player === this.currentPlayer && hero.isAlive) {
+                    this.selectedHero = hero;
+                    this.isAiming = true;
+                    
+                    // Highlight selected hero
+                    this.highlightHero(hero);
+                }
+            }
+
+            updateAim(pointer) {
+                if (!this.isAiming || !this.selectedHero) return;
+
+                this.aimLine.clear();
+                
+                const dx = pointer.x - this.selectedHero.x;
+                const dy = pointer.y - this.selectedHero.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                if (distance > 10) {
+                    // Draw aim line
+                    this.aimLine.lineStyle(3, 0xffff00);
+                    this.aimLine.beginPath();
+                    this.aimLine.moveTo(this.selectedHero.x, this.selectedHero.y);
+                    
+                    // Limit aim distance for power control
+                    const maxDistance = 150;
+                    const clampedDistance = Math.min(distance, maxDistance);
+                    const normalizedX = (dx / distance) * clampedDistance;
+                    const normalizedY = (dy / distance) * clampedDistance;
+                    
+                    this.aimLine.lineTo(
+                        this.selectedHero.x + normalizedX,
+                        this.selectedHero.y + normalizedY
+                    );
+                    this.aimLine.strokePath();
+
+                    // Draw power indicator
+                    const power = clampedDistance / maxDistance;
+                    const powerColor = power > 0.7 ? 0xff0000 : power > 0.4 ? 0xffff00 : 0x00ff00;
+                    this.aimLine.fillStyle(powerColor);
+                    this.aimLine.fillCircle(
+                        this.selectedHero.x + normalizedX,
+                        this.selectedHero.y + normalizedY,
+                        5
+                    );
+                }
+            }
+
+            shoot(pointer) {
+                if (!this.isAiming || !this.selectedHero) return;
+
+                const dx = pointer.x - this.selectedHero.x;
+                const dy = pointer.y - this.selectedHero.y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+
+                if (distance > 10) {
+                    // Calculate velocity
+                    const maxDistance = 150;
+                    const clampedDistance = Math.min(distance, maxDistance);
+                    const power = clampedDistance / maxDistance;
+                    const velocity = power * 800;
+
+                    // Apply force
+                    const normalizedX = dx / distance;
+                    const normalizedY = dy / distance;
+                    
+                    this.selectedHero.body.setVelocity(
+                        normalizedX * velocity,
+                        normalizedY * velocity
+                    );
+
+                    // End turn after a delay
+                    this.time.delayedCall(3000, () => {
+                        this.endTurn();
+                    });
+                }
+
+                // Reset aiming
+                this.isAiming = false;
+                this.selectedHero = null;
+                this.aimLine.clear();
+                this.clearHighlights();
+            }
+
+            getHeroAtPosition(x, y) {
+                return this.heroes.find(hero => {
+                    if (!hero.isAlive) return false;
+                    const distance = Math.sqrt(
+                        (x - hero.x) ** 2 + (y - hero.y) ** 2
+                    );
+                    return distance <= 25;
+                });
+            }
+
+            highlightHero(hero) {
+                this.clearHighlights();
+                
+                // Add highlight circle
+                const highlight = this.add.graphics();
+                highlight.lineStyle(4, 0xffff00);
+                highlight.strokeCircle(hero.x, hero.y, 35);
+                hero.highlight = highlight;
+            }
+
+            clearHighlights() {
+                this.heroes.forEach(hero => {
+                    if (hero.highlight) {
+                        hero.highlight.destroy();
+                        hero.highlight = null;
+                    }
+                });
+            }
+
+            endTurn() {
+                // Check for collisions and damage
+                this.checkCollisions();
+                
+                // Switch player
+                this.currentPlayer = this.currentPlayer === 1 ? 2 : 1;
+                
+                // Update interactivity
+                this.updateHeroInteractivity();
+                
+                // Update UI
+                this.updateUI();
+                
+                // Check win condition
+                this.checkWinCondition();
+            }
+
+            checkCollisions() {
+                // Simple collision detection between heroes
+                for (let i = 0; i < this.heroes.length; i++) {
+                    for (let j = i + 1; j < this.heroes.length; j++) {
+                        const hero1 = this.heroes[i];
+                        const hero2 = this.heroes[j];
+                        
+                        if (!hero1.isAlive || !hero2.isAlive) continue;
+                        
+                        const distance = Math.sqrt(
+                            (hero1.x - hero2.x) ** 2 + (hero1.y - hero2.y) ** 2
+                        );
+                        
+                        if (distance < 50 && (hero1.body.velocity.x !== 0 || hero1.body.velocity.y !== 0 || 
+                                             hero2.body.velocity.x !== 0 || hero2.body.velocity.y !== 0)) {
+                            // Deal damage on collision
+                            this.dealDamage(hero1, 25);
+                            this.dealDamage(hero2, 25);
+                        }
+                    }
+                }
+            }
+
+            dealDamage(hero, damage) {
+                if (!hero.isAlive) return;
+                
+                hero.health -= damage;
+                
+                if (hero.health <= 0) {
+                    hero.isAlive = false;
+                    hero.setAlpha(0.3);
+                    hero.body.setEnable(false);
+                    
+                    // Create death effect
+                    const effect = this.add.graphics();
+                    effect.fillStyle(0xff0000);
+                    effect.fillCircle(hero.x, hero.y, 30);
+                    effect.setAlpha(0.7);
+                    
+                    this.tweens.add({
+                        targets: effect,
+                        alpha: 0,
+                        scaleX: 2,
+                        scaleY: 2,
+                        duration: 500,
+                        onComplete: () => effect.destroy()
+                    });
+                }
+            }
+
+            updateHeroInteractivity() {
+                this.heroes.forEach(hero => {
+                    if (hero.isAlive && hero.player === this.currentPlayer) {
+                        hero.setInteractive();
+                    } else {
+                        hero.disableInteractive();
+                    }
+                });
+            }
+
+            updateUI() {
+                const p1Heroes = this.heroes.filter(h => h.player === 1 && h.isAlive).length;
+                const p2Heroes = this.heroes.filter(h => h.player === 2 && h.isAlive).length;
+                
+                document.getElementById('p1-heroes').textContent = p1Heroes;
+                document.getElementById('p2-heroes').textContent = p2Heroes;
+                
+                // Update current player indicator
+                const p1Info = document.getElementById('player1-info');
+                const p2Info = document.getElementById('player2-info');
+                
+                p1Info.classList.toggle('current-player', this.currentPlayer === 1);
+                p2Info.classList.toggle('current-player', this.currentPlayer === 2);
+            }
+
+            checkWinCondition() {
+                const p1Alive = this.heroes.filter(h => h.player === 1 && h.isAlive).length;
+                const p2Alive = this.heroes.filter(h => h.player === 2 && h.isAlive).length;
+                
+                if (p1Alive === 0) {
+                    this.gameOver = true;
+                    this.showGameOver('Player 2 (Red) Wins!');
+                } else if (p2Alive === 0) {
+                    this.gameOver = true;
+                    this.showGameOver('Player 1 (Blue) Wins!');
+                }
+            }
+
+            showGameOver(message) {
+                const gameOverText = this.add.text(400, 300, message, {
+                    fontSize: '48px',
+                    fill: '#ffff00',
+                    fontStyle: 'bold',
+                    stroke: '#000000',
+                    strokeThickness: 4
+                }).setOrigin(0.5);
+
+                const restartText = this.add.text(400, 360, 'Click to Restart', {
+                    fontSize: '24px',
+                    fill: '#ffffff',
+                    fontStyle: 'bold'
+                }).setOrigin(0.5);
+
+                restartText.setInteractive();
+                restartText.on('pointerdown', () => {
+                    this.scene.restart();
+                });
+            }
+        }
+
+        // Game configuration
+        const config = {
+            type: Phaser.AUTO,
+            width: 800,
+            height: 600,
+            parent: 'game',
+            backgroundColor: '#2a2a2a',
+            physics: {
+                default: 'arcade',
+                arcade: {
+                    gravity: { y: 0 },
+                    debug: false
+                }
+            },
+            scene: SmashingFourGame
+        };
+
+        // Start the game
+        const game = new Phaser.Game(config);
+    </script>
+</body>
+</html>
